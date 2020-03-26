@@ -1,0 +1,62 @@
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.storage.StorageLevel._
+
+import spark.implicits._
+
+case class Logfile(timestamp:String, userIP:String, urlPost:String)
+
+val webLog = spark.read
+    .option("delimiter", "/n")
+    .textFile("/FileStore/tables/2015_07_22_mktplace_shop_web_log_sample___Copy-9c664.log").limit(400000)
+    .map(x => x.split(" (?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1)) //Remove space in single value between quotes
+    .map(schema => Logfile(schema(0),schema(2),schema(11))).toDF() // apply schema
+    .withColumn("userIPSplit", split($"userIP",":")).withColumn("userIP",$"userIPSplit"(0)).drop($"userIPSplit")
+    .withColumn("timestamp", from_unixtime((unix_timestamp(expr("substring(timestamp,0,19)"), "yyyy-MM-dd'T'HH:mm:ss")),"yyyy-MM-dd HH:mm:ss"))
+    .withColumn("previous_hit",lag("timestamp",1,0).over(Window.partitionBy("userIP").orderBy("timestamp"))) // get previous timestamp for each record
+
+    webLog.persist(MEMORY_AND_DISK_SER)
+    webLog.count
+
+
+
+// 1.SESSIONIZE THE WEB LOG BY IP
+// create session ID for threshold interval of 15 mins
+val session = webLog.withColumn("sameSessionCheck",when((unix_timestamp($"timestamp") - unix_timestamp($"previous_hit")) >= 900 || $"previous_hit" === 0, 1).otherwise(0)).select($"timestamp",$"userIP", $"previous_hit",$"sameSessionCheck",$"urlPost").withColumn("sessionId", sum("sameSessionCheck").over(Window.partitionBy("userIP").orderBy("timestamp")))
+
+session.show
+
+// 2.AVERAGE SESSION TIME
+val sessionSpan =  session.select($"userIP", $"sessionId",$"timestamp").groupBy("userIP","sessionId")
+                  .agg((max(unix_timestamp($"timestamp"))-min(unix_timestamp($"timestamp"))).as("sessionSpan")) // each session length for the IP
+
+// Average session time for each IP
+val avgSessionUsr = sessionSpan.groupBy("userIP").agg((sum("sessionSpan")/max("sessionId")).as("avgSessionTime"))
+
+
+// Average session time overall in seconds
+
+val avgSessionAll = sessionSpan
+                   .groupBy("userIP").agg(max("sessionId").as("maxSession"), sum("sessionSpan").as("aggsessionSpan"))
+                   .select((sum("aggsessionSpan")/sum("maxSession")).as("avgSessionTime"))
+
+
+
+
+// 3.UNIQUE URL VISIT PER SESSION
+
+val uniqueURL = session.select($"userIP",$"sessionId",$"urlPost").distinct()
+               .withColumn("urlPostSplit", split($"urlPost", " ")).withColumn("urlPost", $"urlPostSplit"(1)).drop($"urlPostSplit") //take only the URL
+               .groupBy("userIP").agg(count("urlPost").as("visitCount"), max("sessionId").as("maxSession"),(count("urlPost")/max("sessionId")).as("uniqueVisitPerIP")) // Unique URL visit for each IP
+               
+// Unique URL visit overall
+val uniqueUrlHitAll = uniqueURL.select((sum("visitCount")/sum("maxSession")).as("uniqueVisitPerSession"))
+
+
+
+// 4.MOST ENGAGED USER
+// Session length in minutes
+val longestUser = sessionSpan.groupBy("userIP")
+                             .agg((max("sessionSpan")/60).as("sessionLength"))
+                             .orderBy($"sessionLength".desc)                           
+                                                             
