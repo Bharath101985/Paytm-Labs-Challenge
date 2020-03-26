@@ -8,7 +8,7 @@ case class Logfile(timestamp:String, userIP:String, urlPost:String)
 
 val webLog = spark.read
     .option("delimiter", "/n")
-    .textFile("/FileStore/tables/2015_07_22_mktplace_shop_web_log_sample___Copy-9c664.log").limit(400000)
+    .textFile("/FileStore/tables/2015_07_22_mktplace_shop_web_log_sample___Copy-9c664.log")
     .map(x => x.split(" (?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1)) //Remove space in single value between quotes
     .map(schema => Logfile(schema(0),schema(2),schema(11))).toDF() // apply schema
     .withColumn("userIPSplit", split($"userIP",":")).withColumn("userIP",$"userIPSplit"(0)).drop($"userIPSplit")
@@ -22,9 +22,12 @@ val webLog = spark.read
 
 // 1.SESSIONIZE THE WEB LOG BY IP
 // create session ID for threshold interval of 15 mins
-val session = webLog.withColumn("sameSessionCheck",when((unix_timestamp($"timestamp") - unix_timestamp($"previous_hit")) >= 900 || $"previous_hit" === 0, 1).otherwise(0)).select($"timestamp",$"userIP", $"previous_hit",$"sameSessionCheck",$"urlPost").withColumn("sessionId", sum("sameSessionCheck").over(Window.partitionBy("userIP").orderBy("timestamp")))
+val session = webLog.withColumn("sameSessionCheck",when((unix_timestamp($"timestamp") - unix_timestamp($"previous_hit")) >= 900 || $"previous_hit" === 0, 1).otherwise(0))
+					.select($"timestamp",$"userIP", $"previous_hit",$"sameSessionCheck",$"urlPost")
+					.withColumn("sessionId", sum("sameSessionCheck").over(Window.partitionBy("userIP").orderBy("timestamp")))
 
-session.show
+
+
 
 // 2.AVERAGE SESSION TIME
 val sessionSpan =  session.select($"userIP", $"sessionId",$"timestamp").groupBy("userIP","sessionId")
@@ -49,7 +52,7 @@ val uniqueURL = session.select($"userIP",$"sessionId",$"urlPost").distinct()
                .withColumn("urlPostSplit", split($"urlPost", " ")).withColumn("urlPost", $"urlPostSplit"(1)).drop($"urlPostSplit") //take only the URL
                .groupBy("userIP").agg(count("urlPost").as("visitCount"), max("sessionId").as("maxSession"),(count("urlPost")/max("sessionId")).as("uniqueVisitPerIP")) // Unique URL visit for each IP
                
-// Unique URL visit overall
+// Unique URL visit
 val uniqueUrlHitAll = uniqueURL.select((sum("visitCount")/sum("maxSession")).as("uniqueVisitPerSession"))
 
 
