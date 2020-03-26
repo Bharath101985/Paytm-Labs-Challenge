@@ -23,8 +23,8 @@ val webLog = spark.read
 // 1.SESSIONIZE THE WEB LOG BY IP
 // create session ID for threshold interval of 15 mins
 val session = webLog.withColumn("sameSessionCheck",when((unix_timestamp($"timestamp") - unix_timestamp($"previous_hit")) >= 900 || $"previous_hit" === 0, 1).otherwise(0))
-					.select($"timestamp",$"userIP", $"previous_hit",$"sameSessionCheck",$"urlPost")
-					.withColumn("sessionId", sum("sameSessionCheck").over(Window.partitionBy("userIP").orderBy("timestamp")))
+		    .select($"timestamp",$"userIP", $"previous_hit",$"sameSessionCheck",$"urlPost")
+		    .withColumn("sessionId", sum("sameSessionCheck").over(Window.partitionBy("userIP").orderBy("timestamp")))
 
 
 
